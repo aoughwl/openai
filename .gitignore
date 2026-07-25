@@ -1,0 +1,5 @@
+# nimony build artifacts
+/bin/
+nimcache/
+*.o
+*.exe
