@@ -29,6 +29,16 @@ type
     content*: string
     toolCallId*: string    ## role=tool: the id of the call being answered
     name*: string          ## optional author name
+    toolCalls*: seq[ToolCall]
+      ## role=assistant: the calls the model asked for, replayed back.
+      ##
+      ## Required, not optional. The API refuses a `tool` message that does not
+      ## follow an assistant message carrying the matching `tool_calls`
+      ## ("messages with role 'tool' must be a response to a preceding message
+      ## with 'tool_calls'"), so without this field a tool LOOP is
+      ## inexpressible: the first result can be sent and the second round trip
+      ## is a 400. `Reply.toolCalls` gives them to you; `assistantCalls` puts
+      ## them back.
 
   Tool* = object
     name*: string
@@ -99,6 +109,12 @@ proc user*(s: string): Message =
 proc assistant*(s: string): Message =
   Message(role: roleAssistant, content: s)
 
+proc assistantCalls*(toolCalls: seq[ToolCall]; content = ""): Message =
+  ## The assistant turn in which the model ASKED for those calls, put back into
+  ## the transcript. Every `toolResult` must be preceded by one of these
+  ## carrying the id it answers, or the request is rejected.
+  Message(role: roleAssistant, content: content, toolCalls: toolCalls)
+
 proc toolResult*(toolCallId, content: string): Message =
   ## A tool turn feeding a function result back to the model.
   Message(role: roleTool, content: content, toolCallId: toolCallId)
@@ -118,7 +134,29 @@ proc roleStr(r: Role): string =
 proc messageToJson(m: Message): JsonValue =
   result = newJObject()
   result["role"] = newJString(roleStr(m.role))
-  result["content"] = newJString(m.content)
+  # NULL, not "", when the assistant only asked for tools. An empty string is a
+  # message with no text; null is a message that had none, and that is what the
+  # API round-trips.
+  if m.toolCalls.len > 0 and m.content.len == 0:
+    result["content"] = newJNull()
+  else:
+    result["content"] = newJString(m.content)
+  if m.toolCalls.len > 0:
+    let tcs = newJArray()
+    for c in m.toolCalls:
+      let one = newJObject()
+      one["id"] = newJString(c.id)
+      one["type"] = newJString("function")
+      let fn = newJObject()
+      fn["name"] = newJString(c.name)
+      # VERBATIM. `arguments` is a JSON string on the wire in both directions --
+      # re-encoding it as an object here would change the bytes the model sees
+      # and, for a malformed argument set, would fail locally instead of letting
+      # the model see its own mistake.
+      fn["arguments"] = newJString(c.arguments)
+      one["function"] = fn
+      tcs.add one
+    result["tool_calls"] = tcs
   if m.role == roleTool and m.toolCallId.len > 0:
     result["tool_call_id"] = newJString(m.toolCallId)
   if m.name.len > 0:
