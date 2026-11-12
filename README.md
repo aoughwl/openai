@@ -102,3 +102,18 @@ fixtures and `examples/` for runnable snippets.
 ## Licence
 
 MIT — see [LICENSE](LICENSE).
+
+## Vision, reasoning models, backend
+
+```nim
+var err = ""
+let uri = imageDataUri("shot.png", err)                  # PNG/JPEG/GIF/WebP -> data: URI (<= 20 MB)
+let r = c.chat("gpt-5.4", @[userWithImages("What does the dialog say?", @[uri], "high")],
+               maxCompletionTokens = 1000, reasoningEffort = "low")
+```
+
+`images` can also hold plain http(s) URLs. gpt-5 / o-series models reject `max_tokens` and
+`temperature`; use `maxCompletionTokens` (it counts reasoning tokens) and `reasoningEffort`.
+HTTP goes through `requests`: the default `profile = ""` uses its native aoughwl/tls backend; pass a
+browser profile (`newOpenAI(profile = "chrome136")`) to use the curl-impersonate backend instead.
+JSON is `jsonref` (formerly aowljson).

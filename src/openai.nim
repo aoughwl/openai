@@ -2,7 +2,7 @@
 ## =============================================================================
 ## A typed client over <baseUrl>/chat/completions: system prompt, multi-turn
 ## messages, function/tool calling, and (best-effort) streaming. JSON is handled
-## with aowljson (error-as-value); HTTP with the aoughwl `requests` nimony port
+## with jsonref (error-as-value); HTTP with the aoughwl `requests` nimony port
 ## (never raises — transport failure surfaces as `Reply.error`).
 ##
 ## Part of the aoughwl stack; sibling of `anthropic`. Both are the LLM front
@@ -13,8 +13,8 @@
 ##   echo r.text
 
 import requests
-import aowljson
-import std/[os, envvars]
+import jsonref
+import std/[os, envvars, base64, syncio]
 
 const
   DefaultBaseUrl* = "https://api.openai.com/v1"
@@ -29,6 +29,8 @@ type
     content*: string
     toolCallId*: string    ## role=tool: the id of the call being answered
     name*: string          ## optional author name
+    images*: seq[string]   ## role=user: image URLs or data: URIs sent with the text (vision)
+    imageDetail*: string   ## "low" | "high" | "auto" ("" = auto)
     toolCalls*: seq[ToolCall]
       ## role=assistant: the calls the model asked for, replayed back.
       ##
@@ -84,7 +86,7 @@ type
 # --- constructors -----------------------------------------------------------
 
 proc newOpenAI*(apiKey = ""; baseUrl = ""; org = "";
-                profile = "chrome136"; verifyTls = true;
+                profile = ""; verifyTls = true;
                 timeoutMs = 120000): OpenAI =
   ## Build a client. Empty `apiKey`/`baseUrl` fall back to the env
   ## (`OPENAI_API_KEY`, `OPENAI_BASE_URL`) then the defaults.
@@ -105,6 +107,38 @@ proc system*(s: string): Message =
 
 proc user*(s: string): Message =
   Message(role: roleUser, content: s)
+
+proc userWithImages*(s: string; images: seq[string]; detail = "auto"): Message =
+  ## A user turn with images: each entry is an http(s) URL or a `data:image/...` URI
+  ## (see `imageDataUri` for local files).
+  Message(role: roleUser, content: s, images: images, imageDetail: detail)
+
+proc imageMime(b: string): string =
+  ## Sniff the image type from magic bytes ("" if it is not PNG/JPEG/GIF/WebP).
+  if b.len >= 8 and ord(b[0]) == 0x89 and b[1] == 'P' and b[2] == 'N' and b[3] == 'G': return "image/png"
+  if b.len >= 3 and ord(b[0]) == 0xFF and ord(b[1]) == 0xD8: return "image/jpeg"
+  if b.len >= 4 and b[0] == 'G' and b[1] == 'I' and b[2] == 'F': return "image/gif"
+  if b.len >= 12 and b[0] == 'R' and b[1] == 'I' and b[2] == 'F' and b[3] == 'F' and
+     b[8] == 'W' and b[9] == 'E' and b[10] == 'B' and b[11] == 'P': return "image/webp"
+  ""
+
+proc imageDataUri*(path: string; err: var string): string =
+  ## Read a local PNG/JPEG/GIF/WebP file into a `data:` URI for `userWithImages`.
+  ## Returns "" and sets `err` when the file cannot be read, is over 20 MB, or is not an image.
+  var data = ""
+  try:
+    data = readFile(path)
+  except:
+    err = "cannot read image file: " & path
+    return ""
+  if data.len > 20 * 1024 * 1024:
+    err = path & " is over the 20 MB image limit"
+    return ""
+  let mime = imageMime(data)
+  if mime.len == 0:
+    err = path & " is not a PNG, JPEG, GIF or WebP image"
+    return ""
+  "data:" & mime & ";base64," & encode(data)
 
 proc assistant*(s: string): Message =
   Message(role: roleAssistant, content: s)
@@ -139,6 +173,22 @@ proc messageToJson(m: Message): JsonValue =
   # API round-trips.
   if m.toolCalls.len > 0 and m.content.len == 0:
     result["content"] = newJNull()
+  elif m.images.len > 0:
+    # vision: content becomes an array of parts, text first
+    let parts = newJArray()
+    let t = newJObject()
+    t["type"] = newJString("text")
+    t["text"] = newJString(m.content)
+    parts.add t
+    for img in m.images:
+      let p = newJObject()
+      p["type"] = newJString("image_url")
+      let u = newJObject()
+      u["url"] = newJString(img)
+      u["detail"] = newJString(if m.imageDetail.len > 0: m.imageDetail else: "auto")
+      p["image_url"] = u
+      parts.add p
+    result["content"] = parts
   else:
     result["content"] = newJString(m.content)
   if m.toolCalls.len > 0:
@@ -176,7 +226,8 @@ proc toolToJson(t: Tool): JsonValue =
   result["function"] = fn
 
 proc buildBody(model: string; msgs: seq[Message]; tools: seq[Tool];
-               maxTokens: int; temperature: float; stream: bool): string =
+               maxTokens: int; temperature: float; stream: bool;
+               maxCompletionTokens = -1; reasoningEffort = ""): string =
   let root = newJObject()
   root["model"] = newJString(model)
   let ms = newJArray()
@@ -190,6 +241,10 @@ proc buildBody(model: string; msgs: seq[Message]; tools: seq[Tool];
     root["tools"] = ts
   if maxTokens > 0:
     root["max_tokens"] = newJInt(int64(maxTokens))
+  if maxCompletionTokens > 0:
+    root["max_completion_tokens"] = newJInt(int64(maxCompletionTokens))
+  if reasoningEffort.len > 0:
+    root["reasoning_effort"] = newJString(reasoningEffort)
   if temperature >= 0.0:
     root["temperature"] = newJRawNumber($temperature)
   if stream:
@@ -245,10 +300,13 @@ proc post(c: OpenAI; body: string): Reply =
 
 proc chat*(c: OpenAI; model: string; msgs: seq[Message];
            tools: seq[Tool] = @[]; maxTokens = -1;
-           temperature = -1.0): Reply =
+           temperature = -1.0; maxCompletionTokens = -1;
+           reasoningEffort = ""): Reply =
   ## Send a Chat Completions request and return the parsed reply. Never raises;
-  ## check `.ok` / `.error`.
-  let body = buildBody(model, msgs, tools, maxTokens, temperature, false)
+  ## check `.ok` / `.error`. gpt-5 / o-series models reject `max_tokens` and
+  ## `temperature`: use `maxCompletionTokens` (counts reasoning too) and `reasoningEffort`.
+  let body = buildBody(model, msgs, tools, maxTokens, temperature, false,
+                       maxCompletionTokens, reasoningEffort)
   result = c.post(body)
 
 # --- streaming (best-effort) ------------------------------------------------
