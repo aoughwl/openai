@@ -3,14 +3,14 @@
 #
 # Deps are resolved by path (nimony has no package manager here):
 #   aowljson  — https://github.com/aoughwl/aowljson   ($AOWLJSON or ~/aowljson)
-#   requests  — https://github.com/aoughwl/requests   ($AOWL_REQUESTS or ~/aoughwl-requests)
+#   requests  — https://github.com/aoughwl/std/tree/main/requests   ($AOWL_REQUESTS or ~/std/requests, from aoughwl/std)
 #              (nimony PORT lives under <requests>/nimony, not src/)
 set -euo pipefail
 cd "$(dirname "$0")"
 
 NIMONY="${NIMONY:-$HOME/nimony/bin/nimony}"
 AOWLJSON="${AOWLJSON:-$HOME/aowljson}"
-REQ="${AOWL_REQUESTS:-$HOME/aoughwl-requests}"
+REQ="${AOWL_REQUESTS:-$HOME/std/requests}"
 CURL_LIB="$REQ/vendor/curl-impersonate/lib"
 
 mkdir -p bin

@@ -2,9 +2,9 @@
 ##
 ## Build with the same paths as the CLI:
 ##   nimony c -r \
-##     --path:$HOME/aowljson/src --path:$HOME/aoughwl-requests/nimony \
-##     --passl:-L$HOME/aoughwl-requests/vendor/curl-impersonate/lib \
-##     --passl:-Wl,-rpath,$HOME/aoughwl-requests/vendor/curl-impersonate/lib \
+##     --path:$HOME/aowljson/src --path:$HOME/std/requests/nimony \
+##     --passl:-L$HOME/std/requests/vendor/curl-impersonate/lib \
+##     --passl:-Wl,-rpath,$HOME/std/requests/vendor/curl-impersonate/lib \
 ##     examples/ask.nim
 ##
 ## Needs OPENAI_API_KEY in the environment.

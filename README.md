@@ -83,7 +83,7 @@ build the common shapes without hand-writing JSON.
 ```
 
 `build.sh` locates [`aowljson`](https://github.com/aoughwl/aowljson) and the
-[`requests`](https://github.com/aoughwl/requests) HTTP client either next to this
+[`requests`](https://github.com/aoughwl/std/tree/main/requests) HTTP client either next to this
 checkout or via `$AOWLJSON` / `$AOWL_REQUESTS`.
 
 ## Config
